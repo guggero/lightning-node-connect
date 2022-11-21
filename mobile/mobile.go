@@ -91,8 +91,9 @@ var (
 
 	m = make(map[string]*mobileClient)
 
-	// mMutex should always be used to guard the m map
-	mMutex sync.RWMutex
+	// mMutex should always be used to guard the mutex map
+	mMutex   sync.RWMutex
+	mutexMap = make(map[string]sync.RWMutex)
 
 	registry = make(map[string]func(context.Context,
 		*grpc.ClientConn, string, func(string, error)))
@@ -173,17 +174,25 @@ func ConnectServer(nameSpace string, mailboxServer string, isDevServer bool,
 		}
 	}
 
-	mMutex.Lock()
-	defer mMutex.Unlock()
-
-	mc, ok := m[nameSpace]
-	if !ok {
-		return fmt.Errorf("unknown namespace: %s", nameSpace)
-	}
-
 	// Since the connection function is blocking, we need to spin it off
 	// in another goroutine here. See https://pkg.go.dev/syscall/js#FuncOf.
 	go func() {
+		mMutex.Lock()
+		mutex, ok := mutexMap[nameSpace]
+		mMutex.Unlock()
+		if !ok {
+			log.Errorf("Unable to find mutex for namespace: %v", nameSpace)
+			return
+		}
+		mutex.Lock()
+		defer mutex.Unlock()
+
+		mc, ok := m[nameSpace]
+		if !ok {
+			log.Errorf("Unknown namespace: %v", nameSpace)
+			return
+		}
+
 		statusChecker, lndConnect, err := core.MailboxRPCConnection(
 			mailboxServer, pairingPhrase, localPriv, remotePub,
 			func(key *btcec.PublicKey) error {
@@ -237,7 +246,13 @@ func ConnectServer(nameSpace string, mailboxServer string, isDevServer bool,
 // IsConnected returns whether or not there is an active connection.
 func IsConnected(nameSpace string) (bool, error) {
 	mMutex.Lock()
-	defer mMutex.Unlock()
+	mutex, ok := mutexMap[nameSpace]
+	mMutex.Unlock()
+	if !ok {
+		return false, fmt.Errorf("unable to find mutex for namespace: %v", nameSpace)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	mc, ok := m[nameSpace]
 	if !ok {
@@ -250,7 +265,13 @@ func IsConnected(nameSpace string) (bool, error) {
 // Disconnect closes the RPC connection.
 func Disconnect(nameSpace string) error {
 	mMutex.Lock()
-	defer mMutex.Unlock()
+	mutex, ok := mutexMap[nameSpace]
+	mMutex.Unlock()
+	if !ok {
+		return fmt.Errorf("unable to find mutex for namespace: %s", nameSpace)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	mc, ok := m[nameSpace]
 	if !ok {
@@ -270,7 +291,13 @@ func Disconnect(nameSpace string) error {
 // Status returns the status of the LNC RPC connection.
 func Status(nameSpace string) (string, error) {
 	mMutex.Lock()
-	defer mMutex.Unlock()
+	mutex, ok := mutexMap[nameSpace]
+	mMutex.Unlock()
+	if !ok {
+		return "", fmt.Errorf("unable to find mutex for namespace: %v", nameSpace)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	mc, ok := m[nameSpace]
 	if !ok {
@@ -290,7 +317,13 @@ func RegisterLocalPrivCreateCallback(nameSpace string,
 	c NativeCallback) error {
 
 	mMutex.Lock()
-	defer mMutex.Unlock()
+	mutex, ok := mutexMap[nameSpace]
+	mMutex.Unlock()
+	if !ok {
+		return fmt.Errorf("unable to find mutex for namespace: %s", nameSpace)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	mc, ok := m[nameSpace]
 	if !ok {
@@ -308,7 +341,13 @@ func RegisterRemoteKeyReceiveCallback(nameSpace string,
 	c NativeCallback) error {
 
 	mMutex.Lock()
-	defer mMutex.Unlock()
+	mutex, ok := mutexMap[nameSpace]
+	mMutex.Unlock()
+	if !ok {
+		return fmt.Errorf("unable to find mutex for namespace: %s", nameSpace)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	mc, ok := m[nameSpace]
 	if !ok {
@@ -324,7 +363,13 @@ func RegisterRemoteKeyReceiveCallback(nameSpace string,
 // receiving auth data.
 func RegisterAuthDataCallback(nameSpace string, c NativeCallback) error {
 	mMutex.Lock()
-	defer mMutex.Unlock()
+	mutex, ok := mutexMap[nameSpace]
+	mMutex.Unlock()
+	if !ok {
+		return fmt.Errorf("unable to find mutex for namespace: %s", nameSpace)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	mc, ok := m[nameSpace]
 	if !ok {
@@ -341,7 +386,13 @@ func InvokeRPC(nameSpace string, rpcName string, requestJSON string,
 	c NativeCallback) error {
 
 	mMutex.Lock()
-	defer mMutex.Unlock()
+	mutex, ok := mutexMap[nameSpace]
+	mMutex.Unlock()
+	if !ok {
+		return fmt.Errorf("unable to find mutex for namespace: %s", nameSpace)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	mc, ok := m[nameSpace]
 	if !ok {
@@ -386,7 +437,13 @@ func InvokeRPC(nameSpace string, rpcName string, requestJSON string,
 // GetExpiry returns the expiration time of the connection macaroon.
 func GetExpiry(nameSpace string) (string, error) {
 	mMutex.Lock()
-	defer mMutex.Unlock()
+	mutex, ok := mutexMap[nameSpace]
+	mMutex.Unlock()
+	if !ok {
+		return "", fmt.Errorf("unable to find mutex for namespace: %v", nameSpace)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	mc, ok := m[nameSpace]
 	if !ok {
@@ -410,7 +467,13 @@ func GetExpiry(nameSpace string) (string, error) {
 // IsReadOnly returns whether or not the connection macaroon is read-only.
 func IsReadOnly(nameSpace string) (bool, error) {
 	mMutex.Lock()
-	defer mMutex.Unlock()
+	mutex, ok := mutexMap[nameSpace]
+	mMutex.Unlock()
+	if !ok {
+		return false, fmt.Errorf("unable to find mutex for namespace: %v", nameSpace)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	mc, ok := m[nameSpace]
 	if !ok {
@@ -438,7 +501,13 @@ func IsReadOnly(nameSpace string) (bool, error) {
 // has a specificed permission.
 func HasPermissions(nameSpace, permission string) (bool, error) {
 	mMutex.Lock()
-	defer mMutex.Unlock()
+	mutex, ok := mutexMap[nameSpace]
+	mMutex.Unlock()
+	if !ok {
+		return false, fmt.Errorf("unable to find mutex for namespace: %v", nameSpace)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	mc, ok := m[nameSpace]
 	if !ok {
@@ -562,7 +631,13 @@ func parseKeys(nameSpace, localPrivKey, remotePubKey string) (
 	keychain.SingleKeyECDH, *btcec.PublicKey, error) {
 
 	mMutex.Lock()
-	defer mMutex.Unlock()
+	mutex, ok := mutexMap[nameSpace]
+	mMutex.Unlock()
+	if !ok {
+		return nil, nil, fmt.Errorf("unable to find mutex for namespace: %v", nameSpace)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	mc, ok := m[nameSpace]
 	if !ok {

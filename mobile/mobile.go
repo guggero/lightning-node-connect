@@ -50,6 +50,8 @@ type mobileClient struct {
 	localPrivCreateCallback  NativeCallback
 	remoteKeyReceiveCallback NativeCallback
 	authDataCallback         NativeCallback
+
+	mutex sync.Mutex
 }
 
 func newMobileClient() *mobileClient {
@@ -91,15 +93,28 @@ var (
 
 	m = make(map[string]*mobileClient)
 
-	// mMutex should always be used to guard the mutex map
-	mMutex   sync.RWMutex
-	mutexMap = make(map[string]sync.RWMutex)
+	// mMutex should always be used to guard the mutex map.
+	mMutex sync.RWMutex
 
 	registry = make(map[string]func(context.Context,
 		*grpc.ClientConn, string, func(string, error)))
 
 	interceptorLogsInitialize = false
 )
+
+// getClient returns the mobile client for the given namespace or an error if no
+// client exists.
+func getClient(nameSpace string) (*mobileClient, error) {
+	mMutex.Lock()
+	defer mMutex.Unlock()
+
+	mc, ok := m[nameSpace]
+	if !ok {
+		return nil, fmt.Errorf("unknown namespace: %v", nameSpace)
+	}
+
+	return mc, nil
+}
 
 // InitLNC sets up everything required for LNC to run including
 // signal interceptor, logs, and an instance of the mobile client.
@@ -177,21 +192,14 @@ func ConnectServer(nameSpace string, mailboxServer string, isDevServer bool,
 	// Since the connection function is blocking, we need to spin it off
 	// in another goroutine here. See https://pkg.go.dev/syscall/js#FuncOf.
 	go func() {
-		mMutex.Lock()
-		mutex, ok := mutexMap[nameSpace]
-		mMutex.Unlock()
-		if !ok {
-			log.Errorf("Unable to find mutex for namespace: %v", nameSpace)
+		mc, err := getClient(nameSpace)
+		if err != nil {
+			log.Errorf("Error getting client: %v", err)
 			return
 		}
-		mutex.Lock()
-		defer mutex.Unlock()
 
-		mc, ok := m[nameSpace]
-		if !ok {
-			log.Errorf("Unknown namespace: %v", nameSpace)
-			return
-		}
+		mc.mutex.Lock()
+		defer mc.mutex.Unlock()
 
 		statusChecker, lndConnect, err := core.MailboxRPCConnection(
 			mailboxServer, pairingPhrase, localPriv, remotePub,
@@ -245,38 +253,26 @@ func ConnectServer(nameSpace string, mailboxServer string, isDevServer bool,
 
 // IsConnected returns whether or not there is an active connection.
 func IsConnected(nameSpace string) (bool, error) {
-	mMutex.Lock()
-	mutex, ok := mutexMap[nameSpace]
-	mMutex.Unlock()
-	if !ok {
-		return false, fmt.Errorf("unable to find mutex for namespace: %v", nameSpace)
+	mc, err := getClient(nameSpace)
+	if err != nil {
+		return false, fmt.Errorf("error getting client: %v", err)
 	}
-	mutex.Lock()
-	defer mutex.Unlock()
 
-	mc, ok := m[nameSpace]
-	if !ok {
-		return false, fmt.Errorf("unknown namespace: %s", nameSpace)
-	}
+	mc.mutex.Lock()
+	defer mc.mutex.Unlock()
 
 	return mc.lndConn != nil, nil
 }
 
 // Disconnect closes the RPC connection.
 func Disconnect(nameSpace string) error {
-	mMutex.Lock()
-	mutex, ok := mutexMap[nameSpace]
-	mMutex.Unlock()
-	if !ok {
-		return fmt.Errorf("unable to find mutex for namespace: %s", nameSpace)
+	mc, err := getClient(nameSpace)
+	if err != nil {
+		return fmt.Errorf("error getting client: %v", err)
 	}
-	mutex.Lock()
-	defer mutex.Unlock()
 
-	mc, ok := m[nameSpace]
-	if !ok {
-		return fmt.Errorf("unknown namespace: %s", nameSpace)
-	}
+	mc.mutex.Lock()
+	defer mc.mutex.Unlock()
 
 	if mc.lndConn != nil {
 		if err := mc.lndConn.Close(); err != nil {
@@ -290,19 +286,13 @@ func Disconnect(nameSpace string) error {
 
 // Status returns the status of the LNC RPC connection.
 func Status(nameSpace string) (string, error) {
-	mMutex.Lock()
-	mutex, ok := mutexMap[nameSpace]
-	mMutex.Unlock()
-	if !ok {
-		return "", fmt.Errorf("unable to find mutex for namespace: %v", nameSpace)
+	mc, err := getClient(nameSpace)
+	if err != nil {
+		return "", fmt.Errorf("error getting client: %v", err)
 	}
-	mutex.Lock()
-	defer mutex.Unlock()
 
-	mc, ok := m[nameSpace]
-	if !ok {
-		return "", fmt.Errorf("unknown namespace: %s", nameSpace)
-	}
+	mc.mutex.Lock()
+	defer mc.mutex.Unlock()
 
 	if mc.statusChecker == nil {
 		return "", nil
@@ -316,19 +306,13 @@ func Status(nameSpace string) (string, error) {
 func RegisterLocalPrivCreateCallback(nameSpace string,
 	c NativeCallback) error {
 
-	mMutex.Lock()
-	mutex, ok := mutexMap[nameSpace]
-	mMutex.Unlock()
-	if !ok {
-		return fmt.Errorf("unable to find mutex for namespace: %s", nameSpace)
+	mc, err := getClient(nameSpace)
+	if err != nil {
+		return fmt.Errorf("error getting client: %v", err)
 	}
-	mutex.Lock()
-	defer mutex.Unlock()
 
-	mc, ok := m[nameSpace]
-	if !ok {
-		return fmt.Errorf("unknown namespace: %s", nameSpace)
-	}
+	mc.mutex.Lock()
+	defer mc.mutex.Unlock()
 
 	mc.localPrivCreateCallback = c
 
@@ -340,19 +324,13 @@ func RegisterLocalPrivCreateCallback(nameSpace string,
 func RegisterRemoteKeyReceiveCallback(nameSpace string,
 	c NativeCallback) error {
 
-	mMutex.Lock()
-	mutex, ok := mutexMap[nameSpace]
-	mMutex.Unlock()
-	if !ok {
-		return fmt.Errorf("unable to find mutex for namespace: %s", nameSpace)
+	mc, err := getClient(nameSpace)
+	if err != nil {
+		return fmt.Errorf("error getting client: %v", err)
 	}
-	mutex.Lock()
-	defer mutex.Unlock()
 
-	mc, ok := m[nameSpace]
-	if !ok {
-		return fmt.Errorf("unknown namespace: %s", nameSpace)
-	}
+	mc.mutex.Lock()
+	defer mc.mutex.Unlock()
 
 	mc.remoteKeyReceiveCallback = c
 
@@ -362,19 +340,13 @@ func RegisterRemoteKeyReceiveCallback(nameSpace string,
 // RegisterAuthDataCallback sets up the native callbacks upon
 // receiving auth data.
 func RegisterAuthDataCallback(nameSpace string, c NativeCallback) error {
-	mMutex.Lock()
-	mutex, ok := mutexMap[nameSpace]
-	mMutex.Unlock()
-	if !ok {
-		return fmt.Errorf("unable to find mutex for namespace: %s", nameSpace)
+	mc, err := getClient(nameSpace)
+	if err != nil {
+		return fmt.Errorf("error getting client: %v", err)
 	}
-	mutex.Lock()
-	defer mutex.Unlock()
 
-	mc, ok := m[nameSpace]
-	if !ok {
-		return fmt.Errorf("unknown namespace: %s", nameSpace)
-	}
+	mc.mutex.Lock()
+	defer mc.mutex.Unlock()
 
 	mc.authDataCallback = c
 
@@ -385,19 +357,13 @@ func RegisterAuthDataCallback(nameSpace string, c NativeCallback) error {
 func InvokeRPC(nameSpace string, rpcName string, requestJSON string,
 	c NativeCallback) error {
 
-	mMutex.Lock()
-	mutex, ok := mutexMap[nameSpace]
-	mMutex.Unlock()
-	if !ok {
-		return fmt.Errorf("unable to find mutex for namespace: %s", nameSpace)
+	mc, err := getClient(nameSpace)
+	if err != nil {
+		return fmt.Errorf("error getting client: %v", err)
 	}
-	mutex.Lock()
-	defer mutex.Unlock()
 
-	mc, ok := m[nameSpace]
-	if !ok {
-		return fmt.Errorf("unknown namespace: %s", nameSpace)
-	}
+	mc.mutex.Lock()
+	defer mc.mutex.Unlock()
 
 	if rpcName == "" {
 		return fmt.Errorf("param rpcName required")
@@ -436,19 +402,13 @@ func InvokeRPC(nameSpace string, rpcName string, requestJSON string,
 
 // GetExpiry returns the expiration time of the connection macaroon.
 func GetExpiry(nameSpace string) (string, error) {
-	mMutex.Lock()
-	mutex, ok := mutexMap[nameSpace]
-	mMutex.Unlock()
-	if !ok {
-		return "", fmt.Errorf("unable to find mutex for namespace: %v", nameSpace)
+	mc, err := getClient(nameSpace)
+	if err != nil {
+		return "", fmt.Errorf("error getting client: %v", err)
 	}
-	mutex.Lock()
-	defer mutex.Unlock()
 
-	mc, ok := m[nameSpace]
-	if !ok {
-		return "", fmt.Errorf("unknown namespace: %s", nameSpace)
-	}
+	mc.mutex.Lock()
+	defer mc.mutex.Unlock()
 
 	if mc.mac == nil {
 		return "", fmt.Errorf("macaroon not obtained yet. GetExpiry" +
@@ -466,19 +426,13 @@ func GetExpiry(nameSpace string) (string, error) {
 
 // IsReadOnly returns whether or not the connection macaroon is read-only.
 func IsReadOnly(nameSpace string) (bool, error) {
-	mMutex.Lock()
-	mutex, ok := mutexMap[nameSpace]
-	mMutex.Unlock()
-	if !ok {
-		return false, fmt.Errorf("unable to find mutex for namespace: %v", nameSpace)
+	mc, err := getClient(nameSpace)
+	if err != nil {
+		return false, fmt.Errorf("error getting client: %v", err)
 	}
-	mutex.Lock()
-	defer mutex.Unlock()
 
-	mc, ok := m[nameSpace]
-	if !ok {
-		return false, fmt.Errorf("unknown namespace: %s", nameSpace)
-	}
+	mc.mutex.Lock()
+	defer mc.mutex.Unlock()
 
 	if mc.mac == nil {
 		log.Errorf("macaroon not obtained yet. IsReadOnly should " +
@@ -498,21 +452,15 @@ func IsReadOnly(nameSpace string) (bool, error) {
 }
 
 // HasPermissions returns whether or not the connection macaroon
-// has a specificed permission.
+// has a specified permission.
 func HasPermissions(nameSpace, permission string) (bool, error) {
-	mMutex.Lock()
-	mutex, ok := mutexMap[nameSpace]
-	mMutex.Unlock()
-	if !ok {
-		return false, fmt.Errorf("unable to find mutex for namespace: %v", nameSpace)
+	mc, err := getClient(nameSpace)
+	if err != nil {
+		return false, fmt.Errorf("error getting client: %v", err)
 	}
-	mutex.Lock()
-	defer mutex.Unlock()
 
-	mc, ok := m[nameSpace]
-	if !ok {
-		return false, fmt.Errorf("unknown namespace: %s", nameSpace)
-	}
+	mc.mutex.Lock()
+	defer mc.mutex.Unlock()
 
 	if permission == "" {
 		return false, nil
@@ -627,22 +575,16 @@ func validateArgs(mailboxServer, localPrivKey, remotePubKey string) error {
 // parseKeys parses the given keys from their string format and calls callback
 // functions where appropriate. NOTE: This function assumes that the parameter
 // combinations have been checked by validateArgs.
-func parseKeys(nameSpace, localPrivKey, remotePubKey string) (
-	keychain.SingleKeyECDH, *btcec.PublicKey, error) {
+func parseKeys(nameSpace, localPrivKey,
+	remotePubKey string) (keychain.SingleKeyECDH, *btcec.PublicKey, error) {
 
-	mMutex.Lock()
-	mutex, ok := mutexMap[nameSpace]
-	mMutex.Unlock()
-	if !ok {
-		return nil, nil, fmt.Errorf("unable to find mutex for namespace: %v", nameSpace)
+	mc, err := getClient(nameSpace)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error getting client: %v", err)
 	}
-	mutex.Lock()
-	defer mutex.Unlock()
 
-	mc, ok := m[nameSpace]
-	if !ok {
-		return nil, nil, fmt.Errorf("unknown namespace: %s", nameSpace)
-	}
+	mc.mutex.Lock()
+	defer mc.mutex.Unlock()
 
 	var (
 		localStaticKey  keychain.SingleKeyECDH
